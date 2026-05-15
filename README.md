@@ -17,7 +17,7 @@ F1 레이스를 **MDP(Markov Decision Process)** 로 모델링하고, Dynamic Pr
 
 ### Circuit Layout
 
-![Circuit Map](results/circuit_map.png)
+![Circuit Map](assets/circuit_map.png)
 
 > Sector별 색상 (빨강/파랑/노랑), DRS 구간(시안), Speed Trap(보라)
 
@@ -42,7 +42,7 @@ Model-free 공통 설정: `γ=0.99 · α=0.1 · ε: 1.0→0.05 (decay=0.99993, 5
 
 ### 최종 성능 비교 (Greedy Policy, n=500 eval episodes)
 
-![Reward Comparison](results/reward_comparison.png)
+![Reward Comparison](assets/reward_comparison.png)
 
 | 방법 | Mean Reward | Std |
 |------|-------------|-----|
@@ -58,7 +58,7 @@ Model-free 공통 설정: `γ=0.99 · α=0.1 · ε: 1.0→0.05 (decay=0.99993, 5
 
 ### 학습 곡선
 
-![Learning Curves](results/learning_curves.png)
+![Learning Curves](assets/learning_curves.png)
 
 decay=0.99993 적용으로 ε이 ~42,800 에피소드에서 최솟값(0.05)에 도달 → 50k 에피소드 전반에 걸쳐 꾸준한 상승 추세 확인
 
@@ -68,7 +68,7 @@ Battery(y축) × Tire Wear(x축) → 선택 행동, 섹션/날씨/컴파운드�
 
 | Value Iteration — S1 DRS Straight | Double Q-learning — S1 DRS Straight |
 |---|---|
-| ![VI S1](results/policy_value_iteration_s1.png) | ![DQL S1](results/policy_double_q-learning_s1.png) |
+| ![VI S1](assets/policy_value_iteration_s1.png) | ![DQL S1](assets/policy_double_q-learning_s1.png) |
 
 - **DRS 구간**: 배터리가 충분하면 Push, Low이면 Recharge — 두 방법 모두 포착
 - DP는 정책이 매끄럽고 일관적, DQL은 일부 셀에서 노이즈 존재
@@ -77,7 +77,7 @@ Battery(y축) × Tire Wear(x축) → 선택 행동, 섹션/날씨/컴파운드�
 
 | Value Iteration | Double Q-learning |
 |---|---|
-| ![VI Anim](results/anim_vi.gif) | ![DQL Anim](results/anim_dql.gif) |
+| ![VI Anim](assets/anim_vi.gif) | ![DQL Anim](assets/anim_dql.gif) |
 
 오른쪽 패널: STATE(배터리·컴파운드·타이어 마모 컬러 바) / CONTEXT(랩·날씨·섹션) / DECISION(선택 행동)
 
