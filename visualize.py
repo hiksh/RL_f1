@@ -4,19 +4,23 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.animation import FuncAnimation
 from matplotlib.lines import Line2D
-from env import (decode, encode,
-                 N_BATTERY, N_TIRE, N_TRAFFIC, N_SECTION,
+from env import (F1RaceEnv, decode, encode,
+                 N_BATTERY, N_COMPOUND, N_TIRE, N_SECTION, N_LAP, N_WEATHER,
+                 N_ACTIONS,
                  SECTION_TYPE, STRAIGHT, CORNER, CHICANE, PIT_SECTION,
-                 DRS_ZONES, DIRTY_AIR, CLEAN_AIR,
+                 DRS_ZONES,
                  CRITICAL, LOW, MEDIUM, HIGH,
+                 SOFT, MED, HARD,
                  DEGRADED, WORN, FRESH,
-                 MAINTAIN, PUSH, RECHARGE, PIT_STOP)
+                 DRY, RAIN,
+                 MAINTAIN, PUSH, RECHARGE, PIT_SOFT, PIT_MEDIUM, PIT_HARD)
 
-ACTION_NAMES  = ["Maintain", "Push", "Recharge", "Pit-Stop"]
-BATTERY_NAMES = ["Critical", "Low", "Medium", "High"]
-TIRE_NAMES    = ["Degraded", "Worn", "Fresh"]
-TRAFFIC_NAMES = ["Dirty Air", "Clean Air"]
-STYPE_NAMES   = ["Straight", "Corner", "Chicane"]
+ACTION_NAMES   = ["Maintain", "Push", "Recharge", "Pit-Soft", "Pit-Med", "Pit-Hard"]
+BATTERY_NAMES  = ["Critical", "Low", "Medium", "High"]
+COMPOUND_NAMES = ["Soft", "Med", "Hard"]
+TIRE_NAMES     = ["Degraded", "Worn", "Fresh"]
+WEATHER_NAMES  = ["Dry", "Rain"]
+STYPE_NAMES    = ["Straight", "Corner", "Chicane"]
 
 # Sector definitions (inclusive section ranges)
 SECTORS = [
@@ -26,8 +30,6 @@ SECTORS = [
 ]
 
 # 19-section circuit coordinates (clockwise, C01-C19)
-# Layout mirrors the circuit map image: hairpin bottom-left → left DRS straight
-# → top complex → right-side chicanes → bottom DRS → pit/S-F
 _SECTION_POS = np.array([
     [ 0.5,  0.3],   # S0  C01 Hairpin          (Corner)
     [ 1.5,  3.5],   # S1  C02 Left DRS str     (Straight)  ← DRS 1
@@ -53,7 +55,6 @@ _SECTION_POS = np.array([
 TRACK_X = _SECTION_POS[:, 0]
 TRACK_Y = _SECTION_POS[:, 1]
 
-# Corner names shown in animation info panel
 SECTION_NAMES = [
     "C01","C02","C03","C04","C05",
     "C06","C07","C08","C09","C10",
@@ -61,9 +62,7 @@ SECTION_NAMES = [
     "C16","C17","C18","C19",
 ]
 
-# Speed-trap position (midpoint of C04→C05 long straight)
-_SPEED_TRAP = (_SECTION_POS[3] + _SECTION_POS[4]) / 2
-
+_SPEED_TRAP    = (_SECTION_POS[3] + _SECTION_POS[4]) / 2
 _CIRCUIT_CENTER = _SECTION_POS.mean(axis=0)
 _N = 30   # spline points per section
 
@@ -81,20 +80,13 @@ def _smooth_circuit(pts, n=_N):
     return np.concatenate(xs), np.concatenate(ys)
 
 
-# ── Pre-compute spline once ───────────────────────────────────────────────────
 _SX, _SY = _smooth_circuit(_SECTION_POS, n=_N)
 
 
 def _draw_circuit(ax, highlight_section=None, title=""):
-    """
-    Render the F1 circuit in the reference-image style:
-    grid, axes, thick track, sector colours, corner circles,
-    DRS markers, speed trap, start/finish, sector labels.
-    """
     n = _N
     sx, sy = _SX, _SY
 
-    # ── Canvas ────────────────────────────────────────────────────────────────
     ax.set_xlim(-1.5, 11.5)
     ax.set_ylim(-2.0,  9.5)
     ax.set_aspect("equal")
@@ -106,7 +98,7 @@ def _draw_circuit(ax, highlight_section=None, title=""):
     if title:
         ax.set_title(title, fontsize=10, pad=7)
 
-    # ── 1. Track outline (dark border) ───────────────────────────────────────
+    # ── 1. Track outline ──────────────────────────────────────────────────────
     sx_cl = np.append(sx, sx[0])
     sy_cl = np.append(sy, sy[0])
     ax.plot(sx_cl, sy_cl, color="#1a1a1a", lw=20,
@@ -118,13 +110,12 @@ def _draw_circuit(ax, highlight_section=None, title=""):
         i1 = (sec_list[-1] + 1) * n
         xs = sx[i0:i1]
         ys = sy[i0:i1]
-        if sec_list[-1] == N_SECTION - 1:        # last sector wraps to origin
+        if sec_list[-1] == N_SECTION - 1:
             xs = np.append(xs, sx[0])
             ys = np.append(ys, sy[0])
-        ax.plot(xs, ys, color=color, lw=12,
-                solid_capstyle="butt", zorder=2)
+        ax.plot(xs, ys, color=color, lw=12, solid_capstyle="butt", zorder=2)
 
-    # ── 3. DRS zone highlights (cyan overlay) ─────────────────────────────────
+    # ── 3. DRS zone highlights ────────────────────────────────────────────────
     for di in sorted(DRS_ZONES):
         xs = sx[di*n : (di+1)*n + 1]
         ys = sy[di*n : (di+1)*n + 1]
@@ -150,14 +141,10 @@ def _draw_circuit(ax, highlight_section=None, title=""):
                 cw, cw, color=fc, zorder=7
             ))
 
-    # ── 6. DRS detection markers + labels ─────────────────────────────────────
-    dt_labels = {sorted(DRS_ZONES)[0]: "DT1", sorted(DRS_ZONES)[1]: "DT2"}
-    for di, lbl in dt_labels.items():
+    # ── 6. DRS detection markers (green dots, no text label) ─────────────────
+    for di in sorted(DRS_ZONES):
         ax.plot(TRACK_X[di], TRACK_Y[di] + 0.4, "o",
                 ms=7, color="#00C853", zorder=8)
-        ax.text(TRACK_X[di] + 0.25, TRACK_Y[di] + 0.65,
-                lbl, fontsize=7.5, color="#00C853",
-                fontweight="bold", zorder=8)
 
     # ── 7. Speed trap ─────────────────────────────────────────────────────────
     ax.plot(_SPEED_TRAP[0], _SPEED_TRAP[1] + 0.3, "o",
@@ -166,26 +153,7 @@ def _draw_circuit(ax, highlight_section=None, title=""):
             "ST", fontsize=7.5, color="#E040FB",
             fontweight="bold", zorder=8)
 
-    # ── 8. Sector labels ──────────────────────────────────────────────────────
-    for sec_list, color, lbl in SECTORS:
-        mid_sec = sec_list[len(sec_list) // 2]
-        d = _SECTION_POS[mid_sec] - _CIRCUIT_CENTER
-        norm = np.linalg.norm(d) + 1e-9
-        pos  = _SECTION_POS[mid_sec] + (d / norm) * 1.6
-        ax.text(pos[0], pos[1], lbl,
-                ha="center", va="center",
-                fontsize=11, fontweight="bold", color=color, zorder=7)
-
-    # ── 9. Car marker (animation use) ────────────────────────────────────────
-    car_handle = None
-    if highlight_section is not None:
-        car_handle, = ax.plot(
-            TRACK_X[highlight_section], TRACK_Y[highlight_section],
-            "D", ms=13, color="red",
-            markeredgecolor="white", markeredgewidth=1.2, zorder=9
-        )
-
-    # ── 10. Legend ────────────────────────────────────────────────────────────
+    # ── 8. Legend ─────────────────────────────────────────────────────────────
     legend_items = [
         Line2D([0],[0], color="#E53935", lw=5, label="Sector 1"),
         Line2D([0],[0], color="#1E88E5", lw=5, label="Sector 2"),
@@ -200,13 +168,21 @@ def _draw_circuit(ax, highlight_section=None, title=""):
               fontsize=6.5, framealpha=0.9, edgecolor="#aaaaaa",
               handlelength=1.5)
 
+    # ── 9. Car marker (animation use) ────────────────────────────────────────
+    car_handle = None
+    if highlight_section is not None:
+        car_handle, = ax.plot(
+            TRACK_X[highlight_section], TRACK_Y[highlight_section],
+            "D", ms=13, color="red",
+            markeredgecolor="white", markeredgewidth=1.2, zorder=9
+        )
+
     return car_handle
 
 
 # ── Public plotting functions ─────────────────────────────────────────────────
 
 def plot_circuit_map(save_path="results/circuit_map.png"):
-    """Standalone high-quality circuit map (reference-image style)."""
     fig, ax = plt.subplots(figsize=(11, 8))
     fig.patch.set_facecolor("white")
     _draw_circuit(ax, title="F1 Race Strategy — Circuit Layout")
@@ -218,7 +194,6 @@ def plot_circuit_map(save_path="results/circuit_map.png"):
 
 def plot_learning_curves(rewards_dict, window=500,
                          save_path="results/learning_curves.png"):
-    """rewards_dict: {label: array_of_episode_rewards}"""
     def smooth(x):
         return np.convolve(x, np.ones(window) / window, mode="valid")
 
@@ -238,16 +213,16 @@ def plot_learning_curves(rewards_dict, window=500,
     print(f"Saved: {save_path}")
 
 
-def plot_policy_heatmap(policy, title, traffic=CLEAN_AIR, section=0,
+def plot_policy_heatmap(policy, title, compound=MED, lap=2, weather=DRY, section=0,
                         save_path=None):
-    """Battery (y) × Tire (x) → chosen action, for fixed traffic & section."""
-    grid = np.array([[policy[encode(b, t, traffic, section)]
+    """Battery (y) × Tire (x) → chosen action, for fixed compound/lap/weather/section."""
+    grid = np.array([[policy[encode(b, compound, t, section, lap, weather)]
                       for t in range(N_TIRE)]
                      for b in range(N_BATTERY)])
 
-    cmap = plt.cm.get_cmap("tab10", 4)
-    fig, ax = plt.subplots(figsize=(6, 4))
-    im = ax.imshow(grid, cmap=cmap, vmin=0, vmax=3, aspect="auto")
+    cmap = plt.cm.get_cmap("tab10", N_ACTIONS)
+    fig, ax = plt.subplots(figsize=(7, 4))
+    im = ax.imshow(grid, cmap=cmap, vmin=0, vmax=N_ACTIONS - 1, aspect="auto")
     ax.set_xticks(range(N_TIRE));    ax.set_xticklabels(TIRE_NAMES)
     ax.set_yticks(range(N_BATTERY)); ax.set_yticklabels(BATTERY_NAMES)
     ax.set_xlabel("Tire State")
@@ -255,7 +230,8 @@ def plot_policy_heatmap(policy, title, traffic=CLEAN_AIR, section=0,
     stype = STYPE_NAMES[SECTION_TYPE[section]]
     drs   = " [DRS]" if section in DRS_ZONES else ""
     ax.set_title(
-        f"{title}  |  {TRAFFIC_NAMES[traffic]},  "
+        f"{title}  |  {COMPOUND_NAMES[compound]}, Lap {lap+1}, "
+        f"{'Rain' if weather else 'Dry'}  —  "
         f"S{section} {SECTION_NAMES[section]} ({stype}){drs}",
         fontsize=9
     )
@@ -264,7 +240,7 @@ def plot_policy_heatmap(policy, title, traffic=CLEAN_AIR, section=0,
             ax.text(t, b, ACTION_NAMES[grid[b, t]][0],
                     ha="center", va="center",
                     fontsize=9, color="white", fontweight="bold")
-    cbar = plt.colorbar(im, ax=ax, ticks=range(4))
+    cbar = plt.colorbar(im, ax=ax, ticks=range(N_ACTIONS))
     cbar.ax.set_yticklabels(ACTION_NAMES)
     plt.tight_layout()
     path = save_path or (f"results/policy_{title.lower().replace(' ','_')}"
@@ -278,64 +254,203 @@ def animate_episode(trajectory, title="", save_path="results/race_animation.gif"
     cum_rewards = np.cumsum([r for _, _, r in trajectory])
 
     fig = plt.figure(figsize=(15, 7), facecolor="white")
-    ax_t = fig.add_axes([0.01, 0.04, 0.58, 0.92])   # circuit
-    ax_i = fig.add_axes([0.62, 0.04, 0.36, 0.92])   # info panel
+    ax_t = fig.add_axes([0.01, 0.04, 0.58, 0.92])
+    ax_i = fig.add_axes([0.62, 0.04, 0.36, 0.92])
 
-    # Draw static track elements once
     _draw_circuit(ax_t, title=f"Circuit — {title}")
 
-    # Animated elements
     car,     = ax_t.plot([], [], "D", ms=13, color="red",
                          markeredgecolor="white", markeredgewidth=1.2, zorder=9)
     step_txt = ax_t.text(11.2, 9.0, "", fontsize=9, ha="right", zorder=10)
 
-    ax_i.axis("off")
-    ax_i.set_facecolor("#f8f8f8")
-    ax_i.set_title("Agent State", fontsize=11, pad=6)
-    info = ax_i.text(0.06, 0.95, "", transform=ax_i.transAxes,
-                     va="top", fontsize=11, fontfamily="monospace",
-                     linespacing=2.1)
+    _BAT_COLOR  = ["#D32F2F", "#F57C00", "#FBC02D", "#388E3C"]   # Critical→High
+    _TIRE_COLOR = ["#D32F2F", "#F57C00", "#388E3C"]               # Degraded→Fresh
+    _COMP_COLOR = ["#E53935", "#F9A825", "#9E9E9E"]               # Soft/Med/Hard
+    _ACT_COLOR  = {
+        MAINTAIN: "#1565C0", PUSH: "#2E7D32", RECHARGE: "#7B1FA2",
+        PIT_SOFT: "#BF360C", PIT_MEDIUM: "#E65100", PIT_HARD: "#FF6D00",
+    }
 
-    # Sector colour for current section
-    def _sector_color(sec):
-        for sec_list, color, _ in SECTORS:
-            if sec in sec_list:
-                return color
-        return "white"
+    def _draw_state(frame):
+        s, a, r = trajectory[frame]
+        b, comp, t, sec, lap, w = decode(s)
+        stype = SECTION_TYPE[sec]
 
-    def _bar(v, vmax, w=8):
-        n = round(v / vmax * w) if vmax > 0 else 0
-        return "█" * n + "░" * (w - n)
+        ax_i.cla()
+        ax_i.set_facecolor("#f7f7f7")
+        ax_i.set_xlim(0, 1)
+        ax_i.set_ylim(0, 1)
+        ax_i.axis("off")
+
+        # Dark title bar + panel border
+        ax_i.add_patch(plt.Rectangle((0.04, 0.87), 0.92, 0.10, color="#2c2c2c"))
+        ax_i.text(0.50, 0.92, "AGENT STATE",
+                  ha="center", va="center",
+                  fontsize=11, fontweight="bold", color="white")
+        ax_i.add_patch(plt.Rectangle(
+            (0.04, 0.03), 0.92, 0.94,
+            fill=False, edgecolor="#999999", linewidth=1.5))
+
+        def _hdr(y, label):
+            ax_i.text(0.07, y, label,
+                      ha="left", va="center",
+                      fontsize=7.5, color="#888888", fontweight="bold")
+            ax_i.plot([0.07, 0.93], [y - 0.018, y - 0.018],
+                      color="#cccccc", linewidth=0.8)
+
+        def _bar(y, label, val, vmax, color):
+            ax_i.text(0.07, y, label,
+                      ha="left", va="center", fontsize=9, color="#444444")
+            ax_i.add_patch(plt.Rectangle(
+                (0.38, y - 0.020), 0.42, 0.040, color="#e0e0e0"))
+            ax_i.add_patch(plt.Rectangle(
+                (0.38, y - 0.020), 0.42 * (val + 1) / vmax, 0.040,
+                color=color))
+
+        # ── STATE ──────────────────────────────────────────────────────
+        _hdr(0.84, "STATE")
+
+        _bar(0.76, "Battery", b, N_BATTERY, _BAT_COLOR[b])
+        ax_i.text(0.93, 0.76, BATTERY_NAMES[b],
+                  ha="right", va="center",
+                  fontsize=8.5, fontweight="bold", color=_BAT_COLOR[b])
+
+        cc = _COMP_COLOR[comp]
+        ax_i.text(0.07, 0.68, "Compound",
+                  ha="left", va="center", fontsize=9, color="#444444")
+        ax_i.plot(0.43, 0.68, "o", ms=11, color=cc,
+                  markeredgecolor="#666666", markeredgewidth=0.5)
+        ax_i.text(0.51, 0.68, COMPOUND_NAMES[comp],
+                  ha="left", va="center",
+                  fontsize=11, fontweight="bold", color=cc)
+
+        _bar(0.60, "Tire", t, N_TIRE, _TIRE_COLOR[t])
+        ax_i.text(0.93, 0.60, TIRE_NAMES[t],
+                  ha="right", va="center",
+                  fontsize=8.5, fontweight="bold", color=_TIRE_COLOR[t])
+
+        # ── CONTEXT ────────────────────────────────────────────────────
+        _hdr(0.50, "CONTEXT")
+
+        ax_i.text(0.07, 0.42, f"Lap {lap + 1} / {N_LAP}",
+                  ha="left", va="center", fontsize=10, color="#333333")
+        w_color = "#1565C0" if w == RAIN else "#E65100"
+        w_icon  = "☁  Rain" if w == RAIN else "☀  Dry"
+        ax_i.text(0.60, 0.42, w_icon,
+                  ha="left", va="center",
+                  fontsize=10, fontweight="bold", color=w_color)
+
+        ax_i.text(0.07, 0.34,
+                  f"{SECTION_NAMES[sec]}  —  {STYPE_NAMES[stype]}",
+                  ha="left", va="center", fontsize=9.5, color="#333333")
+        if sec in DRS_ZONES:
+            ax_i.text(0.88, 0.34, "DRS",
+                      ha="center", va="center", fontsize=8,
+                      fontweight="bold", color="#006064",
+                      bbox=dict(boxstyle="round,pad=0.25",
+                                facecolor="#E0F7FA", edgecolor="#00838F",
+                                linewidth=1.0))
+        elif sec == PIT_SECTION:
+            ax_i.text(0.88, 0.34, "PIT",
+                      ha="center", va="center", fontsize=8,
+                      fontweight="bold", color="#BF360C",
+                      bbox=dict(boxstyle="round,pad=0.25",
+                                facecolor="#FBE9E7", edgecolor="#BF360C",
+                                linewidth=1.0))
+
+        # ── DECISION ───────────────────────────────────────────────────
+        _hdr(0.25, "DECISION")
+
+        acolor = _ACT_COLOR.get(a, "#333333")
+        ax_i.add_patch(plt.Rectangle(
+            (0.10, 0.115), 0.80, 0.085, color=acolor, alpha=0.13))
+        ax_i.add_patch(plt.Rectangle(
+            (0.10, 0.115), 0.80, 0.085,
+            fill=False, edgecolor=acolor, linewidth=1.8))
+        ax_i.text(0.50, 0.157, ACTION_NAMES[a],
+                  ha="center", va="center",
+                  fontsize=13, fontweight="bold", color=acolor)
+
+        ax_i.text(0.07, 0.065, "Reward",
+                  ha="left", va="center", fontsize=8.5, color="#555555")
+        r_color = "#C62828" if r < -1.5 else "#2E7D32" if r > -0.7 else "#555555"
+        ax_i.text(0.43, 0.065, f"{r:+.2f}",
+                  ha="right", va="center",
+                  fontsize=10, fontweight="bold", color=r_color)
+        ax_i.text(0.55, 0.065, "Total",
+                  ha="left", va="center", fontsize=8.5, color="#555555")
+        ax_i.text(0.93, 0.065, f"{cum_rewards[frame]:.1f}",
+                  ha="right", va="center",
+                  fontsize=10, fontweight="bold", color="#333333")
 
     def update(frame):
         s, a, r = trajectory[frame]
-        b, t, tr, sec = decode(s)
-        stype = SECTION_TYPE[sec]
-        drs   = " [DRS]" if sec in DRS_ZONES else ""
-        pit   = " [PIT]" if sec == PIT_SECTION else ""
+        b, comp, t, sec, lap, w = decode(s)
 
         car.set_data([TRACK_X[sec]], [TRACK_Y[sec]])
         step_txt.set_text(f"Step {frame + 1:3d} / {len(trajectory)}")
-
-        lines = [
-            f"┌─────────────────────────┐",
-            f"│ Battery  {_bar(b, N_BATTERY-1)}  {BATTERY_NAMES[b]:<8}│",
-            f"│ Tire     {_bar(t, N_TIRE-1)}     {TIRE_NAMES[t]:<8}│",
-            f"├─────────────────────────┤",
-            f"│ Traffic  {TRAFFIC_NAMES[tr]:<16}│",
-            f"│ Section  {SECTION_NAMES[sec]} ({STYPE_NAMES[stype]}){drs}{pit:<4}│",
-            f"├─────────────────────────┤",
-            f"│ Action   {ACTION_NAMES[a]:<16}│",
-            f"│ Reward   {r:+8.2f}             │",
-            f"│ Cumul.   {cum_rewards[frame]:8.2f}             │",
-            f"└─────────────────────────┘",
-        ]
-        info.set_text("\n".join(lines))
-        return car, step_txt, info
+        _draw_state(frame)
+        return car, step_txt
 
     anim = FuncAnimation(fig, update,
                          frames=len(trajectory), interval=400, blit=False)
     anim.save(save_path, writer="pillow", fps=2.5)
+    plt.close()
+    print(f"Saved: {save_path}")
+
+
+def plot_final_reward_comparison(n_eval=500, save_path="results/reward_comparison.png"):
+    """Greedy policy evaluation bar chart for all 6 methods."""
+    env = F1RaceEnv(n_laps=N_LAP)
+
+    def _eval(policy):
+        totals = []
+        for _ in range(n_eval):
+            s, done, total = env.reset(), False, 0.0
+            while not done:
+                s, r, done = env.step(int(policy[s]))
+                total += r
+            totals.append(total)
+        return np.array(totals)
+
+    entries = [
+        ("Value\nIteration",   np.load("results/policy_vi.npy")),
+        ("Policy\nIteration",  np.load("results/policy_pi.npy")),
+        ("MC\nControl",        np.argmax(np.load("results/Q_mc.npy"),    axis=1)),
+        ("SARSA",              np.argmax(np.load("results/Q_sarsa.npy"), axis=1)),
+        ("Q-learning",         np.argmax(np.load("results/Q_ql.npy"),    axis=1)),
+        ("Double\nQ-learning", np.argmax(np.load("results/Q_dql.npy"),   axis=1)),
+    ]
+
+    labels = [e[0] for e in entries]
+    data   = [_eval(e[1]) for e in entries]
+    means  = [d.mean() for d in data]
+    stds   = [d.std()  for d in data]
+
+    palette = ["#1E88E5", "#42A5F5", "#F5A623", "#7ED321", "#D0021B", "#9B59B6"]
+
+    fig, ax = plt.subplots(figsize=(11, 5))
+    fig.patch.set_facecolor("white")
+    bars = ax.bar(labels, means, yerr=stds, capsize=5,
+                  color=palette, alpha=0.85, edgecolor="white", linewidth=0.8,
+                  error_kw=dict(elinewidth=1.2, ecolor="#555555", capthick=1.2))
+
+    for bar, m in zip(bars, means):
+        ax.text(bar.get_x() + bar.get_width() / 2,
+                m * 0.97,
+                f"{m:.1f}", ha="center", va="center",
+                fontsize=9, fontweight="bold", color="white")
+
+    ymin = min(m - s for m, s in zip(means, stds)) - 3
+    ax.set_ylim(ymin, 2)
+    ax.axhline(0, color="#cccccc", linewidth=0.8, linestyle="--")
+    ax.set_ylabel("Mean Episode Reward  (↑ better)", fontsize=10)
+    ax.set_title(f"Final Greedy Policy Performance  —  n={n_eval} eval episodes per method",
+                 fontsize=11)
+    ax.grid(True, axis="y", alpha=0.3)
+    ax.set_axisbelow(True)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
     plt.close()
     print(f"Saved: {save_path}")
 
@@ -363,18 +478,19 @@ def main():
         "Double Q-learning": rewards_dql,
     })
 
-    for traffic in (CLEAN_AIR, DIRTY_AIR):
-        for section in (1, 3, 6, 7):   # DRS straight, top corner, chicane, apex
-            for policy, name in [(policy_vi,  "Value Iteration"),
-                                 (policy_pi,  "Policy Iteration"),
-                                 (policy_mc,  "MC Control"),
-                                 (policy_dql, "Double Q-learning")]:
-                plot_policy_heatmap(policy, name, traffic=traffic, section=section)
+    for section in (1, 3, 6, 7):
+        for policy, name in [(policy_vi,  "Value Iteration"),
+                             (policy_pi,  "Policy Iteration"),
+                             (policy_mc,  "MC Control"),
+                             (policy_dql, "Double Q-learning")]:
+            plot_policy_heatmap(policy, name, section=section)
 
     animate_episode(traj_vi,  title="Value Iteration",
                     save_path="results/anim_vi.gif")
     animate_episode(traj_dql, title="Double Q-learning",
                     save_path="results/anim_dql.gif")
+
+    plot_final_reward_comparison()
 
 
 if __name__ == "__main__":

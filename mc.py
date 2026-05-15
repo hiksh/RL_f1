@@ -4,7 +4,7 @@ from env import N_STATES, N_ACTIONS
 
 class MCSolver:
     def __init__(self, env, gamma=0.99, epsilon=1.0,
-                 eps_decay=0.9995, eps_min=0.05):
+                 eps_decay=0.99993, eps_min=0.05):
         self.env       = env
         self.gamma     = gamma
         self.epsilon   = epsilon

@@ -6,7 +6,7 @@ class QLearning:
     """Off-policy TD control (Q-learning)."""
 
     def __init__(self, env, gamma=0.99, alpha=0.1, epsilon=1.0,
-                 eps_decay=0.9995, eps_min=0.05):
+                 eps_decay=0.99993, eps_min=0.05):
         self.env       = env
         self.gamma     = gamma
         self.alpha     = alpha
@@ -41,7 +41,7 @@ class DoubleQLearning:
     across two Q-tables to reduce maximisation bias."""
 
     def __init__(self, env, gamma=0.99, alpha=0.1, epsilon=1.0,
-                 eps_decay=0.9995, eps_min=0.05):
+                 eps_decay=0.99993, eps_min=0.05):
         self.env       = env
         self.gamma     = gamma
         self.alpha     = alpha
