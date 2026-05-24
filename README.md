@@ -8,13 +8,14 @@ F1 레이스를 **MDP(Markov Decision Process)** 로 모델링하고, Dynamic Pr
 
 1. [Motivation & Problem Statement](#1-motivation--problem-statement)
 2. [MDP Formulation](#2-mdp-formulation)
-3. [Algorithm Implementation](#3-algorithm-implementation)
-4. [Hyperparameters & Training Setup](#4-hyperparameters--training-setup)
-5. [Results: Learning Curves](#5-results-learning-curves)
-6. [Results: Final Performance Comparison](#6-results-final-performance-comparison)
-7. [Results: Policy Analysis](#7-results-policy-analysis)
-8. [Discussion & Justification](#8-discussion--justification)
-9. [How to Run](#9-how-to-run)
+3. [MDP Parameter Design Rationale](#3-mdp-parameter-design-rationale)
+4. [Algorithm Implementation](#4-algorithm-implementation)
+5. [Hyperparameters & Training Setup](#5-hyperparameters--training-setup)
+6. [Results: Learning Curves](#6-results-learning-curves)
+7. [Results: Final Performance Comparison](#7-results-final-performance-comparison)
+8. [Results: Policy Analysis](#8-results-policy-analysis)
+9. [Discussion & Justification](#9-discussion--justification)
+10. [How to Run](#10-how-to-run)
 
 ---
 
@@ -155,7 +156,156 @@ $$r(s, a) = -\text{cost}$$
 
 ---
 
-## 3. Algorithm Implementation
+## 3. MDP Parameter Design Rationale
+
+각 수치가 임의로 설정된 것이 아님을 보이기 위해, 실제 F1 물리·통계 데이터를 근거로 설계 논리를 설명합니다.
+
+### 3-1. 타이어 마모 확률 (Tire Wear Probability)
+
+```python
+_WEAR_P = {
+    (STRAIGHT, MAINTAIN): 0.01,  (STRAIGHT, PUSH): 0.04,  (STRAIGHT, RECHARGE): 0.00,
+    (CORNER,   MAINTAIN): 0.04,  (CORNER,   PUSH): 0.12,  (CORNER,   RECHARGE): 0.02,
+    (CHICANE,  MAINTAIN): 0.06,  (CHICANE,  PUSH): 0.20,  (CHICANE,  RECHARGE): 0.03,
+}
+_COMPOUND_WEAR_MULT = {SOFT: 1.5, MED: 1.0, HARD: 0.6}
+```
+
+**구간 유형별 근거**
+
+타이어 마모의 핵심 원인은 **횡방향(lateral) G-force** 입니다. 방향 전환이 많을수록 타이어 접지면이 비틀리며 고무가 더 빨리 닳습니다.
+
+| 구간 | 물리적 특성 | 마모 수준 |
+|------|------------|----------|
+| Straight | 직선 주행 → 횡력 거의 없음, 주로 종방향 힘만 작용 | 낮음 |
+| Corner | 방향 전환 → 횡력 발생, 타이어 접지면 열 축적 | 중간 |
+| Chicane | **연속 방향 전환** → 좌우 횡력이 교차 반복, 가장 심한 마모 | 높음 |
+
+실제 F1에서도 Monaco의 Hairpin·Chicane 구간이 타이어 마모의 주요 지점이며, 고속 DRS 스트레이트는 오히려 마모가 적습니다.
+
+**행동별 근거**
+
+- `RECHARGE on Straight = 0.00`: 속도를 줄이며 회생제동에 집중 → 타이어에 가해지는 힘이 최소 → 마모 없음
+- `PUSH on Corner = 0.12` (MAINTAIN의 3배): 고속 코너 진입 시 횡G가 급증 → 타이어 슬립 앵글 확대
+- `PUSH on Chicane = 0.20` (전체 최대값): 시케인에서 빠르게 달리면 방향 전환마다 타이어가 심하게 비틀림
+
+**컴파운드 배율 근거**
+
+실제 피렐리(Pirelli) 타이어 특성 기준:
+- **SOFT (×1.5)**: 고무 성분이 부드러워 그립은 강하지만 마모율 약 50% 빠름
+- **HARD (×0.6)**: 고무가 단단해 열 축적이 느리고 마모율 약 40% 낮음
+- MED를 기준(×1.0)으로 한 상대값
+
+**비 배율 (×2.0) 근거**
+
+비가 오면 노면이 미끄러워 타이어가 미세하게 **슬립(slip)**하며 달립니다. 슬립은 마찰열보다 더 많은 고무를 깎아내며, 수막 위 접지력 유지를 위한 타이어 변형도 커집니다.
+
+### 3-2. 배터리(ERS) 전이 확률
+
+```python
+_BATTERY_P = {
+    (STRAIGHT, MAINTAIN):  (-1, 0.30),
+    (STRAIGHT, PUSH):      (-1, 0.80),
+    (STRAIGHT, RECHARGE):  (+1, 0.10),
+    (CORNER,   MAINTAIN):  (+1, 0.15),
+    (CORNER,   PUSH):      (-1, 0.20),
+    (CORNER,   RECHARGE):  (+1, 0.25),
+    (CHICANE,  MAINTAIN):  (+1, 0.15),
+    (CHICANE,  PUSH):      (-1, 0.15),
+    (CHICANE,  RECHARGE):  (+1, 0.25),
+}
+```
+
+ERS의 동작 원리는 두 가지입니다: **MGU-K**(모터 구동, 배터리 소모)와 **MGU-H + 브레이킹**(감속 에너지 회수, 배터리 충전).
+
+**STRAIGHT 구간**
+
+- `PUSH: (-1, 0.80)` — 직선에서 ERS 풀 출력이 가장 많이 쓰임. 실제 F1에서 DRS 구간 전후로 MGU-K 최대 배치. 80%로 높게 설정
+- `MAINTAIN: (-1, 0.30)` — 직선 유지에도 일정 ERS 사용하지만 풀 출력은 아님
+- `RECHARGE: (+1, 0.10)` — **직선에서는 브레이킹 포인트가 없어** 회생제동 기회가 적음 → 충전 효율 낮음
+
+**CORNER 구간**
+
+- `MAINTAIN: (+1, 0.15)` — 코너 진입 전 브레이킹 → 회생제동으로 자연스럽게 충전. MAINTAIN에서도 충전이 가능한 이유
+- `RECHARGE: (+1, 0.25)` — 속도를 적극적으로 줄이며 회생 → 코너 구간이 충전에 최적
+- `PUSH: (-1, 0.20)` — 코너에서 ERS로 가속. 직선만큼 소모는 아님
+
+**CHICANE 구간**
+
+코너와 유사하되 연속 방향 전환이라 각 꺾임마다 소규모 제동 발생 → 충전 확률이 코너와 동일(0.25). PUSH 소모는 진입 속도가 낮아 0.15로 약간 낮게.
+
+### 3-3. 날씨 전이 확률
+
+```python
+_WEATHER_CHANGE_P = {DRY: 0.08, RAIN: 0.18}
+# P(DRY→RAIN) = 0.08,  P(RAIN→DRY) = 0.18  — 랩 완료 시 적용
+```
+
+**정상 분포(Stationary Distribution)**
+
+$$\pi_\text{RAIN} = \frac{0.08}{0.08 + 0.18} \approx 0.31$$
+
+장기적으로 전체 시간의 **31%가 비** 상태입니다.
+
+**수치 근거**
+
+- 실제 F1 레이스 통계에서 강우가 발생하는 레이스는 약 25~35% (Monaco, Silverstone, Spa 등 포함) — 31%는 이 범위 안에 위치
+- **비대칭 설정**: 비는 한번 시작되면 금방 그치지 않고(P(RAIN→DRY)=0.18), 맑은 날씨에서 갑자기 비가 오는 빈도(P(DRY→RAIN)=0.08)는 더 낮음 → 현실의 날씨 패턴 반영
+- **랩 단위 적용**: 날씨는 수십 초 단위가 아닌 수 분(랩) 단위로 변하기 때문에 매 섹션이 아닌 랩 완료 시 전이
+
+### 3-4. 보상 함수 수치 근거
+
+**Base traversal time 스케일**
+
+실제 F1 데이터와의 대응:
+- 1랩 ≈ 90초, 19개 섹션 → 섹션 평균 ≈ 4.7초
+- 코드의 기준값(0.6~1.5)은 절대 시간이 아닌 **상대적 비율**이며, 최대/최소 비율 = 1.5/0.6 = **2.5배** — 전략 선택이 통과 시간에 실질적 영향을 줌
+
+| 구간 × 행동 | 기준값 | 의미 |
+|------------|--------|------|
+| Straight × PUSH | **0.6** | 가장 빠른 통과 |
+| Straight × MAINTAIN | 1.0 | 기준 |
+| Chicane × RECHARGE | **1.5** | 가장 느린 통과 |
+
+**PIT 패널티 −5.0**
+
+실제 F1 피트스톱 시간 손실: 약 20~25초.
+섹션 평균값(≈1.1 단위) 기준 5.0은 섹션 약 4~5개 분량의 시간 손실에 해당 — 피트스톱이 "어쩔 수 없는 경우에만" 선택되도록 충분히 큰 패널티로 설정.
+
+**DRS 보너스 −0.2**
+
+실제 DRS: 랩당 약 0.3~0.5초 이득. 모델에서 DRS 구간 2개(S1, S16) × −0.2 = 랩당 −0.4 단위 감소 → 실제 비율과 부합.
+
+**컴파운드 보정**
+
+| 컴파운드 | 실제 F1 | 모델 설정 (×19섹션) |
+|----------|---------|-------------------|
+| SOFT | 랩당 약 0.3~0.5초 빠름 | −0.15 × 19 = 랩당 −2.85 단위 |
+| HARD | 랩당 약 0.2~0.3초 느림 | +0.10 × 19 = 랩당 +1.9 단위 |
+
+SOFT가 HARD보다 빠르지만 더 빨리 닳는 **트레이드오프**가 보상(속도)과 마모 확률(×1.5 vs ×0.6) 양쪽에 동시에 반영됩니다.
+
+**RAIN +1.0**
+
+비 오는 레이스는 건식 대비 랩타임이 약 15~25% 느려짐 (Monaco 기준 약 20초/랩).
++1.0/섹션 × 19섹션 = 랩당 −19 reward 감소 → 5랩 전체로 약 −95 추가 패널티로 실질적인 영향을 줌.
+
+**DEGRADED tire +0.5 / CRITICAL battery +0.3**
+
+- DEGRADED: 완전 마모 타이어는 랩당 약 2~4초 손실. +0.5 × 19 = 랩당 −9.5 reward → 피트스톱 패널티(−5.0)와 비교해 "적시 피트인"을 고려하게 만드는 수준
+- CRITICAL: ERS 없으면 랩당 약 0.5~1초 손실. +0.3 × 19 = 랩당 −5.7 reward → 배터리 관리를 유도하는 수준
+
+### 설계 일관성 요약
+
+모든 수치의 공통 원칙:
+
+1. **실제 F1 비율 반영**: 절대값보다 상대적 비율(SOFT가 MED보다 1.5배 빠르게 닳음, 비가 오면 2배 마모)을 실제 데이터에 맞춤
+2. **트레이드오프 구조**: 빠른 선택(PUSH, SOFT)은 항상 더 빠른 마모·소모 비용을 수반
+3. **전략적 균형**: 피트스톱 패널티(−5.0)가 마모 페널티(+0.5/섹션)보다 크게 설정되어, "웬만하면 피트하지 마라"는 현실적 전략이 자연스럽게 학습되도록 설계
+
+---
+
+## 4. Algorithm Implementation
 
 ### 3-1. Dynamic Programming: Value Iteration (`dp.py`)
 
@@ -257,7 +407,7 @@ for each step:
 
 ---
 
-## 4. Hyperparameters & Training Setup
+## 5. Hyperparameters & Training Setup
 
 | 파라미터 | 값 | 적용 방법 |
 |----------|-----|----------|
@@ -281,7 +431,7 @@ for each step:
 
 ---
 
-## 5. Results: Learning Curves
+## 6. Results: Learning Curves
 
 ### 5-1. 학습 곡선 전체 (Learning Curves)
 
@@ -311,7 +461,7 @@ for each step:
 
 ---
 
-## 6. Results: Final Performance Comparison
+## 7. Results: Final Performance Comparison
 
 ### 6-1. 최종 성능 비교 바 차트
 
@@ -339,7 +489,7 @@ for each step:
 
 ---
 
-## 7. Results: Policy Analysis
+## 8. Results: Policy Analysis
 
 ### 7-1. 행동 분포 비교 (Action Distribution)
 
@@ -438,7 +588,7 @@ DRS 구간에서 배터리와 타이어 상태에 따른 전략 비교입니다.
 
 ---
 
-## 8. Discussion & Justification
+## 9. Discussion & Justification
 
 ### 8-1. DP vs Model-free: 왜 DP가 압도적으로 우수한가?
 
@@ -492,7 +642,7 @@ DP는 전이 모델 P(s'|s,a)를 **직접 활용**하여 벨만 방정식을 정
 
 ---
 
-## 9. How to Run
+## 10. How to Run
 
 ### 의존성 설치 (Requirements)
 
