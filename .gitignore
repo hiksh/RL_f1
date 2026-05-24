@@ -1,1 +1,6 @@
 results/
+
+.claude/
+__pycache__/
+*.pyc
+*.pyo
