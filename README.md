@@ -131,16 +131,21 @@ $$r(s, a) = -\text{cost}$$
 
 보상은 **섹션 통과 시간의 음수**이며, 모든 값이 음수입니다 (시간 최소화 = 보상 최대화).
 
-| 요소 | 효과 |
-|------|------|
-| PIT 행동 | −5.0 (고정 패널티) |
-| Base traversal time | Straight/Corner/Chicane × MAINTAIN/PUSH/RECHARGE별 기준값 |
-| DRS + PUSH | −0.2 추가 감소 (빠름) |
-| SOFT compound | −0.15 (약간 빠름) |
-| HARD compound | +0.10 (약간 느림) |
-| RAIN | +1.0 (전체적으로 느림) |
-| DEGRADED tire | +0.5 (추가 감속) |
-| CRITICAL battery | +0.3 (ERS 없음) |
+**PIT 행동은 예외**로, reward = −5.0 고정값이 직접 반환됩니다.  
+그 외 행동의 reward는 `−cost` 로 계산되며, `cost` 는 아래 요소들의 합산입니다.
+
+| 요소 | cost에 대한 영향 | reward에 대한 영향 |
+|------|-----------------|-------------------|
+| PIT 행동 | — (별도 처리) | **−5.0 고정** (가장 큰 패널티) |
+| Base traversal time | 기준값 그대로 더해짐 | 구간·행동별로 다름 (아래 표 참고) |
+| DRS + PUSH | **−0.2** (cost 감소) | **+0.2** (reward 증가, 빠름) |
+| SOFT compound | **−0.15** (cost 감소) | **+0.15** (reward 증가, 약간 빠름) |
+| HARD compound | **+0.10** (cost 증가) | **−0.10** (reward 감소, 약간 느림) |
+| RAIN | **+1.0** (cost 증가) | **−1.0** (reward 감소, 전체적으로 느림) |
+| DEGRADED tire | **+0.5** (cost 증가) | **−0.5** (reward 감소, 추가 감속) |
+| CRITICAL battery | **+0.3** (cost 증가) | **−0.3** (reward 감소, ERS 없음) |
+
+> 요약: **cost의 + = reward의 −** (나쁨), **cost의 − = reward의 +** (좋음)
 
 ### 2-6. 에피소드 구성 (Episode)
 
